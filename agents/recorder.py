@@ -14,11 +14,17 @@ def get_recordings_dir() -> str:
 
 class Recorder:
     def __init__(
-        self, prefix: str, filename: Optional[str] = None, guid: Optional[str] = None
+        self, prefix: str, filename: Optional[str] = None, guid: Optional[str] = None,
+        subdir: Optional[str] = None
     ) -> None:
         self.guid = self.get_guid(filename) if filename else (guid or str(uuid.uuid4()))
         self.prefix: str = prefix
         recordings_dir = get_recordings_dir()
+
+        # Support subdirectory structure (e.g., "agent_name/seed")
+        if subdir:
+            recordings_dir = os.path.join(recordings_dir, subdir)
+
         self.filename = (
             os.path.join(recordings_dir, filename)
             if filename

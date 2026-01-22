@@ -119,7 +119,9 @@ class Agent(ABC):
 
     def start_recording(self) -> None:
         filename = self.agent_name if self.is_playback else None
-        self.recorder = Recorder(prefix=self.name, filename=filename)
+        # Support subdirectory structure for custom agents (e.g., "agent_name/seed")
+        subdir = getattr(self, 'recording_subdir', None)
+        self.recorder = Recorder(prefix=self.name, filename=filename, subdir=subdir)
         logger.info(
             f"created new recording for {self.name} into {self.recorder.filename}"
         )

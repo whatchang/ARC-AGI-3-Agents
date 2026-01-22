@@ -125,6 +125,12 @@ def main() -> None:
         help="Reset optimizer on each level (True/False)",
         default=None,
     )
+    parser.add_argument(
+        "--condition-name",
+        type=str,
+        help="Condition name for organizing recordings and metrics (e.g., 'Original_ResetOpt')",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -210,6 +216,7 @@ def main() -> None:
         seed=args.seed,
         max_actions=args.max_actions,
         reset_optimizer_on_level=reset_opt,
+        condition_name=args.condition_name,
     )
     agent_thread = threading.Thread(target=partial(run_agent, swarm))
     agent_thread.daemon = True  # die when the main thread dies

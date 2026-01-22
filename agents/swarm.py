@@ -41,6 +41,7 @@ class Swarm:
         seed: Optional[int] = None,
         max_actions: int = 30000,
         reset_optimizer_on_level: Optional[bool] = None,
+        condition_name: Optional[str] = None,
     ) -> None:
         from . import AVAILABLE_AGENTS
 
@@ -51,6 +52,7 @@ class Swarm:
         self.seed = seed
         self.max_actions = max_actions
         self.reset_optimizer_on_level = reset_optimizer_on_level
+        self.condition_name = condition_name
         self.threads = []
         self.agents = []
         self.cleanup_threads = []
@@ -98,6 +100,8 @@ class Swarm:
                 agent_kwargs["max_actions"] = self.max_actions
             if self.reset_optimizer_on_level is not None:
                 agent_kwargs["reset_optimizer_on_level"] = self.reset_optimizer_on_level
+            if self.condition_name is not None:
+                agent_kwargs["condition_name"] = self.condition_name
 
             a = self.agent_class(**agent_kwargs)
             self.agents.append(a)
