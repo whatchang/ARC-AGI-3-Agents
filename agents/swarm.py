@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional, Type
 import requests
 
 from .structs import Scorecard
+from .agent import rate_limited_request
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -74,8 +75,16 @@ class Swarm:
         else:
             self.tags.extend(["agent", self.agent_name])
 
-    def main(self) -> Scorecard:
-        """The main orchestration loop, continues until all agents are done."""
+    def main(self, batch_size: int = 2) -> Scorecard:
+        """The main orchestration loop, continues until all agents are done.
+
+        Args:
+            batch_size: Number of games to run in parallel (default 2).
+                        With API limit of 600 RPM (10 RPS):
+                        - batch_size=2: ~5 FPS per game
+                        - batch_size=3: ~3.3 FPS per game
+                        - batch_size=6: ~1.67 FPS per game
+        """
 
         # submit start of scorecard
         self.card_id = self.open_scorecard()
@@ -110,13 +119,24 @@ class Swarm:
         for a in self.agents:
             self.threads.append(Thread(target=a.main, daemon=True))
 
-        # start all the threads
-        for t in self.threads:
-            t.start()
+        # Run threads in batches to respect API rate limits
+        # This keeps all games in the same scorecard while limiting concurrent API calls
+        total_threads = len(self.threads)
+        for batch_start in range(0, total_threads, batch_size):
+            batch_end = min(batch_start + batch_size, total_threads)
+            batch_threads = self.threads[batch_start:batch_end]
 
-        # wait for all agent to finish
-        for t in self.threads:
-            t.join()
+            logger.info(f"Starting batch {batch_start // batch_size + 1}: games {batch_start + 1}-{batch_end} of {total_threads}")
+
+            # Start batch
+            for t in batch_threads:
+                t.start()
+
+            # Wait for batch to complete
+            for t in batch_threads:
+                t.join()
+
+            logger.info(f"Batch {batch_start // batch_size + 1} completed")
 
         # all agents are now done
         card_id = self.card_id
@@ -137,7 +157,9 @@ class Swarm:
     def open_scorecard(self) -> str:
         json_str = json.dumps({"tags": self.tags})
 
-        r = self._session.post(
+        r = rate_limited_request(
+            self._session,
+            'post',
             f"{self.ROOT_URL}/api/scorecard/open",
             json=json.loads(json_str),
             headers=self.headers,
@@ -158,7 +180,9 @@ class Swarm:
     def close_scorecard(self, card_id: str) -> Optional[Scorecard]:
         self.card_id = None
         json_str = json.dumps({"card_id": card_id})
-        r = self._session.post(
+        r = rate_limited_request(
+            self._session,
+            'post',
             f"{self.ROOT_URL}/api/scorecard/close",
             json=json.loads(json_str),
             headers=self.headers,

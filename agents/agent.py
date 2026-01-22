@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import threading
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import Any, Optional
@@ -17,6 +18,102 @@ from .structs import FrameData, GameAction, GameState, Scorecard
 from .tracing import trace_agent_session
 
 logger = logging.getLogger()
+
+
+class RateLimiter:
+    """Thread-safe rate limiter using token bucket algorithm.
+
+    Enforces rate limits across all agents to respect API RPM limits.
+    Default: 600 RPM = 10 requests per second (with safety margin of 8 RPS).
+    """
+
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, requests_per_second: float = 0):
+        """Initialize rate limiter.
+
+        Set to 0 to disable rate limiting (rely on 429 retry instead).
+        With batch_size=2, GPU max ~2.9 FPS × 2 = ~5.8 RPS < 10 RPS limit.
+        """
+        if self._initialized:
+            return
+        self._initialized = True
+
+        self.requests_per_second = requests_per_second
+        self.min_interval = 1.0 / requests_per_second if requests_per_second > 0 else 0
+        self.enabled = requests_per_second > 0
+        self.last_request_time = 0.0
+        self._request_lock = threading.Lock()
+
+    def acquire(self):
+        """Wait until a request can be made within rate limits."""
+        if not self.enabled:
+            return  # Rate limiting disabled
+
+        with self._request_lock:
+            now = time.time()
+            time_since_last = now - self.last_request_time
+
+            if time_since_last < self.min_interval:
+                sleep_time = self.min_interval - time_since_last
+                time.sleep(sleep_time)
+
+            self.last_request_time = time.time()
+
+
+# Global rate limiter instance
+_rate_limiter = RateLimiter()
+
+
+def rate_limited_request(session: requests.Session, method: str, url: str,
+                         max_retries: int = 5, **kwargs) -> Response:
+    """Make a rate-limited request with exponential backoff retry on 429 errors.
+
+    Args:
+        session: requests.Session to use
+        method: HTTP method ('get' or 'post')
+        url: Request URL
+        max_retries: Maximum number of retries on 429 error
+        **kwargs: Additional arguments to pass to request
+
+    Returns:
+        Response object
+    """
+    base_delay = 1.0  # Start with 1 second delay
+
+    for attempt in range(max_retries + 1):
+        # Wait for rate limiter
+        _rate_limiter.acquire()
+
+        # Make request
+        if method.lower() == 'get':
+            response = session.get(url, **kwargs)
+        else:
+            response = session.post(url, **kwargs)
+
+        # Check for rate limit error
+        if response.status_code == 429:
+            if attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = base_delay * (2 ** attempt) + (time.time() % 1)
+                logger.warning(f"Rate limit hit (429), retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                continue
+            else:
+                logger.error(f"Rate limit exceeded after {max_retries} retries")
+
+        return response
+
+    return response  # Return last response even if rate limited
 
 
 class Agent(ABC):
@@ -80,10 +177,17 @@ class Agent(ABC):
             and self.action_counter <= self.MAX_ACTIONS
         ):
             action = self.choose_action(self.frames, self.frames[-1])
-            if frame := self.take_action(action):
-                self.append_frame(frame)
+            result = self.take_action(action)
+
+            # Handle rate limit - don't count action, don't append frame
+            if result is False:
+                logger.info(f"{self.game_id} - Rate limited, skipping action (not counted)")
+                continue  # Don't increment action_counter
+
+            if result is not None:
+                self.append_frame(result)
                 logger.info(
-                    f"{self.game_id} - {action.name}: count {self.action_counter}, score {frame.score}, avg fps {self.fps})"
+                    f"{self.game_id} - {action.name}: count {self.action_counter}, score {result.score}, avg fps {self.fps})"
                 )
             self.action_counter += 1
 
@@ -145,18 +249,42 @@ class Agent(ABC):
             data["game_id"] = self.game_id
 
         json_str = json.dumps(data)
-        r = self._session.post(
+        r = rate_limited_request(
+            self._session,
+            'post',
             f"{self.ROOT_URL}/api/cmd/{action.name}",
             json=json.loads(json_str),
             headers=self.headers,
         )
-        if "error" in r.json():
-            logger.warning(f"Exception during action request: {r.json()}")
+        try:
+            response_json = r.json()
+            if "error" in response_json:
+                logger.warning(f"Exception during action request: {response_json}")
+        except ValueError:
+            logger.warning(f"Failed to parse response: {r.status_code} - {r.text}")
         return r
 
     def take_action(self, action: GameAction) -> Optional[FrameData]:
-        """Submits the specific action and gets the next frame."""
-        frame_data = self.do_action_request(action).json()
+        """Submits the specific action and gets the next frame.
+
+        Returns:
+            FrameData if successful
+            None if validation error
+            False if rate limited (to distinguish from None)
+        """
+        response = self.do_action_request(action)
+
+        # Check if rate limited after all retries
+        if response.status_code == 429:
+            logger.warning(f"Action skipped due to rate limit - not counting this action")
+            return False  # Special marker for rate limit
+
+        try:
+            frame_data = response.json()
+        except ValueError:
+            logger.warning(f"Failed to parse response JSON: {response.status_code}")
+            return None
+
         try:
             frame = FrameData.model_validate(frame_data)
         except ValidationError as e:
@@ -166,9 +294,11 @@ class Agent(ABC):
 
     def get_scorecard(self) -> Scorecard:
         """Get the scorecard for this agent's game as a Scorecard pydantic object."""
-        r = self._session.get(
+        r = rate_limited_request(
+            self._session,
+            'get',
             f"{self.ROOT_URL}/api/scorecard/{self.card_id}/{self.game_id}",
-            timeout=1,
+            timeout=10,
             headers=self.headers,
         )
         response_data = r.json()
