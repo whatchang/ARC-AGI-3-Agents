@@ -13,6 +13,15 @@ from .templates.random_agent import Random
 from .templates.reasoning_agent import ReasoningAgent
 from .templates.smolagents import SmolCodingAgent, SmolVisionAgent
 
+# Import custom agents
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from custom_agents.action import Action
+from custom_agents.naive_cl import NaiveCL
+from custom_agents.hope_cl import HopeCL
+from custom_agents.meta_cl import MetaCL
+
 load_dotenv()
 
 AVAILABLE_AGENTS: dict[str, Type[Agent]] = {
@@ -27,6 +36,12 @@ for rec in Recorder.list():
 
 # update the agent dictionary to include subclasses of LLM class
 AVAILABLE_AGENTS["reasoningagent"] = ReasoningAgent
+
+# Add custom CL agents
+AVAILABLE_AGENTS["action"] = Action
+AVAILABLE_AGENTS["naivecl"] = NaiveCL
+AVAILABLE_AGENTS["hopecl"] = HopeCL
+AVAILABLE_AGENTS["metacl"] = MetaCL
 
 __all__ = [
     "Swarm",

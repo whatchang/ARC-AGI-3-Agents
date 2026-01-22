@@ -38,6 +38,9 @@ class Swarm:
         ROOT_URL: str,
         games: list[str],
         tags: list[str] = [],
+        seed: Optional[int] = None,
+        max_actions: int = 30000,
+        reset_optimizer_on_level: Optional[bool] = None,
     ) -> None:
         from . import AVAILABLE_AGENTS
 
@@ -45,6 +48,9 @@ class Swarm:
         self.ROOT_URL = ROOT_URL
         self.agent_name = agent
         self.agent_class = AVAILABLE_AGENTS[agent]
+        self.seed = seed
+        self.max_actions = max_actions
+        self.reset_optimizer_on_level = reset_optimizer_on_level
         self.threads = []
         self.agents = []
         self.cleanup_threads = []
@@ -75,15 +81,25 @@ class Swarm:
         # create all the agents
         for i in range(len(self.GAMES)):
             g = self.GAMES[i % len(self.GAMES)]
-            a = self.agent_class(
-                card_id=self.card_id,
-                game_id=g,
-                agent_name=self.agent_name,
-                ROOT_URL=self.ROOT_URL,
-                record=True,
-                cookies=self._session.cookies,
-                tags=self.tags,
-            )
+            # Build agent kwargs
+            agent_kwargs = {
+                "card_id": self.card_id,
+                "game_id": g,
+                "agent_name": self.agent_name,
+                "ROOT_URL": self.ROOT_URL,
+                "record": True,
+                "cookies": self._session.cookies,
+                "tags": self.tags,
+            }
+            # Add optional parameters for custom agents
+            if self.seed is not None:
+                agent_kwargs["seed"] = self.seed
+            if self.max_actions is not None:
+                agent_kwargs["max_actions"] = self.max_actions
+            if self.reset_optimizer_on_level is not None:
+                agent_kwargs["reset_optimizer_on_level"] = self.reset_optimizer_on_level
+
+            a = self.agent_class(**agent_kwargs)
             self.agents.append(a)
 
         # create all the threads

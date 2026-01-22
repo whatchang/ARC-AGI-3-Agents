@@ -107,6 +107,24 @@ def main() -> None:
         help="Comma-separated list of tags for the scorecard (e.g., 'experiment,v1.0')",
         default=None,
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Random seed for reproducibility",
+        default=None,
+    )
+    parser.add_argument(
+        "--max-actions",
+        type=int,
+        help="Maximum number of actions per game",
+        default=30000,
+    )
+    parser.add_argument(
+        "--reset_optimizer_on_level",
+        type=str,
+        help="Reset optimizer on each level (True/False)",
+        default=None,
+    )
 
     args = parser.parse_args()
 
@@ -179,11 +197,19 @@ def main() -> None:
     # Initialize AgentOps client
     init_agentops(api_key=os.getenv("AGENTOPS_API_KEY"), log_level=log_level)
 
+    # Parse reset_optimizer_on_level
+    reset_opt = None
+    if args.reset_optimizer_on_level is not None:
+        reset_opt = args.reset_optimizer_on_level.lower() == "true"
+
     swarm = Swarm(
         args.agent,
         ROOT_URL,
         games,
-        tags=tags,  # Pass tags as keyword argument
+        tags=tags,
+        seed=args.seed,
+        max_actions=args.max_actions,
+        reset_optimizer_on_level=reset_opt,
     )
     agent_thread = threading.Thread(target=partial(run_agent, swarm))
     agent_thread.daemon = True  # die when the main thread dies
